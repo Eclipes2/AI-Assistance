@@ -19,41 +19,44 @@ The LLM then generates an answer that is *grounded* in your actual data.
 
 ```
 User query
-    │
-    ▼
-[Embed query]  ──────────────────────────────────────────────────┐
-    │                                                            │
-    ▼                                                            │
-[Vector store: similarity search]  → top-3 FAQ chunks            │
-    │                                                            │
-    └──────────── combine as context ◄───────────────────────────┘
-                        │
-                        ▼
-              [Prompt = system + context + query]
-                        │
-                        ▼
-                   [Ollama LLM]
-                        │
-                        ▼
-                   Generated answer
+    |
+    v
+[Embed query]  ─────────────────────────────────────────────────────┐
+    |                                                               |
+    v                                                               |
+[Vector store: score threshold search]                              |
+  -> FAQs with similarity >= 0.35 (variable count: 0 to 10)        |
+    |                                                               |
+    └─────────── combine as context <───────────────────────────────┘
+                       |
+             if no docs above threshold:
+             LLM says "I don't know"
+                       |
+                       v
+             [Prompt = system + context + query]
+                       |
+                       v
+                  [Ollama LLM]
+                       |
+                       v
+                  Generated answer
 ```
 
 ---
 
-## LangChain Version Note
+## LangChain 1.x — LCEL API
 
-This project uses **LangChain 1.x** which introduced LCEL
-(LangChain Expression Language). The older high-level helpers
-(`RetrievalQA`, `create_retrieval_chain`) were removed. The pipeline
-is built manually using LCEL pipe operators:
+This project uses **LangChain 1.x** which removed the old high-level helpers
+(`RetrievalQA`, `create_retrieval_chain`) in favour of **LCEL**
+(LangChain Expression Language). Steps are composed with the pipe operator `|`:
 
 ```python
 chain = prompt | llm | StrOutputParser()
 answer = chain.invoke({"context": context, "input": user_message})
 ```
 
-Retrieval is done separately so we can also capture source documents
-for display in the UI.
+Retrieval is done explicitly before the chain so we can also return source
+documents to the frontend.
 
 ---
 
@@ -63,135 +66,157 @@ for display in the UI.
 
 **Library:** `sentence-transformers` via `langchain-community`
 
-This model converts a piece of text into a **384-dimensional vector**
-(a list of 384 floats). Texts that are semantically similar will have
-vectors that are close together in that 384-dimensional space.
+Converts text into a **384-dimensional vector** capturing semantic meaning.
+Similar texts produce similar vectors (high cosine similarity).
 
 We use it to:
 - Embed every FAQ (question + answer) when building the index
 - Embed the user's query at runtime before searching
 
 Why this model?
-- Very small (~80 MB) and fast on CPU
+- Small (~80 MB) and fast on CPU, no GPU required
 - Good semantic quality for English Q&A tasks
-- No GPU required
+- Downloaded automatically on first use and cached in `~/.cache/huggingface`
 
 ### 2. Vector Store — ChromaDB
 
 **Library:** `chromadb` + `langchain-chroma`
 
-ChromaDB stores the FAQ embeddings and performs **cosine similarity
-search** to find which FAQs are most relevant to the user's query.
+ChromaDB stores FAQ embeddings and performs **cosine similarity search**
+using the **HNSW** (Hierarchical Navigable Small World) algorithm.
 
 Storage layout on disk:
 
 ```
-backend/chroma_db/       ← persisted ChromaDB data
-    faqs/                ← collection name
-        *.bin            ← HNSW index files
-        *.pkl            ← embedding vectors
+backend/chroma_db/
+    <uuid>/
+        data_level0.bin   <- HNSW graph
+        header.bin
+        length.bin
+        link_lists.bin
+    chroma.sqlite3        <- metadata, collection info
 ```
 
-The index is rebuilt from scratch by `python manage.py index_faq`.
+The index is updated by `python manage.py index_faq`.
+Documents are cleared and re-added without deleting the collection UUID, so
+the running Django server never loses its reference to the collection.
 
-### 3. Retriever
+### 3. Retriever — Similarity Score Threshold
 
-Configured to return the **top 3** most similar FAQ documents (`k=3`).
-This number is a trade-off:
-- Too few → risk missing relevant context
-- Too many → bloats the prompt, confuses the LLM, increases latency
+```python
+retriever = vector_store.as_retriever(
+    search_type="similarity_score_threshold",
+    search_kwargs={"score_threshold": 0.35, "k": 10},
+)
+```
+
+Instead of always returning a fixed top-k, the threshold approach returns
+**only FAQs that are genuinely relevant**:
+
+| Situation | Results |
+|-----------|---------|
+| Question matches one specific FAQ | 1 source |
+| Broad question spanning several FAQs | 3-6 sources |
+| Off-topic / out-of-scope question | 0 sources → fallback answer |
+
+Tuning `SIMILARITY_THRESHOLD` in `ai_pipeline.py`:
+- Raise it (e.g. `0.5`) → stricter, fewer but more precise sources
+- Lower it (e.g. `0.2`) → more permissive, more sources but possibly noisy
 
 ### 4. Prompt Template
 
 ```
-You are a friendly and helpful customer support assistant.
-Use ONLY the following FAQ context to answer the question.
-If the answer is not covered by the context, politely say you don't know
-and suggest the user contact a human agent.
+System:
+  You are a friendly and helpful customer support assistant.
+  Use ONLY the following FAQ context to answer the question.
+  If the answer is not covered by the context, politely say you
+  don't know and suggest the user contact a human agent.
 
-FAQ Context:
-{context}          ← top-3 retrieved FAQ snippets injected here
+  FAQ Context:
+  {context}        <- retrieved FAQ chunks injected here
 
-User Question: {question}
-
-Answer:
+Human: {input}
 ```
 
-The `{context}` and `{question}` placeholders are filled by LangChain's
-`RetrievalQA` chain.
-
-### 5. LLM — Ollama (Mistral 7B)
+### 5. LLM — Ollama
 
 **Library:** `langchain-ollama`
 
-Ollama is a local LLM server. It downloads and serves open-source models
+Ollama is a local LLM server — it downloads and serves open-source models
 on your machine. No API key, no data sent to the cloud.
 
-`mistral` (7B parameters) is a good balance of:
-- Response quality
-- Speed (runs well on modern CPUs, fast on GPU)
-- Memory usage (~5 GB RAM)
+Change the model by editing `OLLAMA_MODEL` in `ai_pipeline.py`:
 
-Alternatively you can use `llama3.2`, `qwen2.5`, or any model available
-at https://ollama.com/library.
-
-To switch model, change `OLLAMA_MODEL` in `ai_pipeline.py`.
+```python
+OLLAMA_MODEL = 'mistral'          # 4 GB, great balance
+# OLLAMA_MODEL = 'llama3.2'       # 2 GB, lighter
+# OLLAMA_MODEL = 'qwen2.5:14b'    # 9 GB, higher quality
+```
 
 ---
 
 ## Data Flow (Sequence)
 
 ```
-1. Admin runs: python manage.py seed_faq
-   └─ Inserts 18 sample FAQs into MongoDB collection "faqs"
+1. Admin: python manage.py seed_faq
+   -> Inserts 18 sample FAQs into MongoDB 'faqs' collection
 
-2. Admin runs: python manage.py index_faq
-   └─ Loads all FAQs from MongoDB
-   └─ For each FAQ: embeds (question + answer) → 384-dim vector
-   └─ Stores vectors + metadata in ChromaDB ("faqs" collection)
+2. Admin: python manage.py index_faq
+   -> Loads all FAQs from MongoDB
+   -> For each FAQ: embeds (question + answer) -> 384-dim vector
+   -> Clears old documents, adds fresh ones to ChromaDB
 
-3. User sends a message via the Vue.js UI
-   └─ POST /api/chat/ { message, session_id }
+3. User types in the Vue.js UI
+   -> Autocomplete filters FAQ questions matching the input
+   -> User selects suggestion or types freely
 
-4. Django ChatView receives the request
-   └─ Validates input
-   └─ Calls run_pipeline(user_message)
+4. User sends a message
+   -> POST /api/chat/ { message, session_id }
 
-5. RAG pipeline (ai_pipeline.py)
-   a. Embed user_message → query vector (384 dims)
-   b. ChromaDB: cosine similarity(query_vector, all_faq_vectors) → top 3
-   c. Build prompt: system_prompt + retrieved_faqs + user_message
-   d. Send prompt to Ollama Mistral → streamed text response
-   e. Return { answer, sources }
+5. Django ChatView
+   -> Validates input (session_id accepts null for new sessions)
+   -> Calls run_pipeline(user_message)
 
-6. Django saves both turns (user + assistant) to MongoDB
-   └─ Collection "conversations", embedded Message subdocuments
+6. RAG pipeline (ai_pipeline.py)
+   a. Embed user_message -> query vector (384 dims)
+   b. ChromaDB: return FAQs with cosine_similarity >= 0.35 (max 10)
+   c. Format context = concatenate retrieved FAQ page_content
+   d. chain = prompt | ChatOllama | StrOutputParser()
+   e. answer = chain.invoke({'context': context, 'input': message})
+   f. Return { answer, sources }
 
-7. API returns { answer, sources, session_id } to the frontend
-8. Vue.js appends the message to the chat list and scrolls down
+7. Django saves both turns to MongoDB
+   -> Collection 'conversations', embedded Message subdocuments
+
+8. API returns { answer, sources, session_id }
+
+9. Vue.js
+   -> Appends bubbles, auto-scrolls
+   -> Renders answer as Markdown (bold, lists, code)
+   -> Shows collapsible 'N sources consultees' with category + question
 ```
 
 ---
 
 ## Caching Strategy
 
-The embedding model, vector store, and RAG chain are all module-level
-singletons (initialised once, reused for every request):
+Module-level singletons are initialised once per Django worker process
+and reused for every subsequent request (avoids reloading the model):
 
 ```python
-_embeddings = None
-_vector_store = None
-_rag_chain = None
+_embeddings = None    # HuggingFaceEmbeddings (~80 MB loaded once)
+_vector_store = None  # Chroma client
+_llm_chain = None     # prompt | ChatOllama | StrOutputParser
 
-def get_rag_chain():
-    global _rag_chain
-    if _rag_chain is None:
-        _rag_chain = build_rag_chain()   # expensive — done once
-    return _rag_chain
+def get_llm_chain():
+    global _llm_chain
+    if _llm_chain is None:
+        _llm_chain = prompt | get_llm() | StrOutputParser()
+    return _llm_chain
 ```
 
-When `index_faq` is run, these singletons are reset to `None` so the
-next request picks up the freshly indexed data.
+After `index_faq` completes, `_vector_store` and `_llm_chain` are reset
+to `None` so the next request reloads the updated index.
 
 ---
 
@@ -199,10 +224,10 @@ next request picks up the freshly indexed data.
 
 | Improvement | How |
 |-------------|-----|
-| Streaming responses | Use Ollama's `/api/chat` stream endpoint + Django `StreamingHttpResponse` + SSE on the frontend |
-| Better retrieval | Use `MMR` (Maximal Marginal Relevance) instead of pure similarity to reduce redundant results |
-| Conversation memory | Pass the last N turns as additional context in the prompt |
+| Streaming responses | Ollama stream endpoint + Django StreamingHttpResponse + EventSource on frontend |
+| Conversation memory | Append last N message pairs to the prompt |
+| MMR retrieval | `search_type='mmr'` to reduce redundant sources |
 | Hybrid search | Combine vector similarity with BM25 keyword search |
-| Larger model | Switch `OLLAMA_MODEL` to `llama3.1:8b` or `mistral-nemo` for better quality |
-| Evaluation | Use RAGAS framework to measure answer faithfulness and relevance |
-| Authentication | Add JWT auth to protect the chat endpoint |
+| Re-ranking | Use a cross-encoder to re-score retrieved documents |
+| Evaluation | RAGAS framework to measure faithfulness and relevance |
+| Authentication | JWT auth to protect the /api/chat/ endpoint |

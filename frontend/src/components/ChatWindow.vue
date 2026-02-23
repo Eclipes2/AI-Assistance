@@ -107,13 +107,36 @@
     </Transition>
 
     <!-- ── Input bar ─────────────────────────────────────── -->
-    <div
-      class="px-4 pb-4 pt-2 bg-slate-800 border-t border-slate-700"
-    >
-      <form
-        class="flex gap-2 items-end"
-        @submit.prevent="send(inputText)"
-      >
+    <div class="px-4 pb-4 pt-2 bg-slate-800 border-t border-slate-700">
+
+      <!-- Autocomplete suggestions -->
+      <Transition name="suggestions">
+        <ul
+          v-if="suggestions.length && inputText.trim()"
+          class="mb-2 rounded-xl border border-slate-600 bg-slate-750 overflow-hidden divide-y divide-slate-700"
+        >
+          <li
+            v-for="(suggestion, i) in suggestions"
+            :key="i"
+            class="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-slate-700 transition-colors"
+            :class="{ 'bg-slate-700': i === activeSuggestion }"
+            @mousedown.prevent="pickSuggestion(suggestion.question)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 shrink-0 text-indigo-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-4.35-4.35M17 11A6 6 0 1 1 5 11a6 6 0 0 1 12 0z"/>
+            </svg>
+            <span class="text-sm text-slate-200 truncate">
+              <!-- highlight the matching part -->
+              <span v-html="highlight(suggestion.question)" />
+            </span>
+            <span class="ml-auto shrink-0 text-[10px] text-slate-500 uppercase tracking-wide">
+              {{ suggestion.category }}
+            </span>
+          </li>
+        </ul>
+      </Transition>
+
+      <form class="flex gap-2 items-end" @submit.prevent="send(inputText)">
         <textarea
           ref="inputRef"
           v-model="inputText"
@@ -121,8 +144,11 @@
           placeholder="Type your question…"
           class="flex-1 resize-none rounded-2xl px-4 py-2.5 text-sm bg-slate-700 text-white placeholder-slate-400 border border-slate-600 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent leading-snug max-h-32 scrollbar-thin"
           :disabled="chatStore.isLoading"
-          @keydown.enter.exact.prevent="send(inputText)"
-          @input="autoResize"
+          @keydown.enter.exact.prevent="onEnter"
+          @keydown.ArrowDown.prevent="navigateSuggestion(1)"
+          @keydown.ArrowUp.prevent="navigateSuggestion(-1)"
+          @keydown.escape="suggestions = []"
+          @input="onInput"
         />
         <button
           type="submit"
@@ -130,32 +156,22 @@
           class="shrink-0 w-10 h-10 rounded-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center transition-colors shadow"
           title="Send (Enter)"
         >
-          <svg
-            xmlns="http://www.w3.org/2000/svg"
-            class="w-4 h-4 text-white"
-            fill="none"
-            viewBox="0 0 24 24"
-            stroke="currentColor"
-            stroke-width="2.5"
-          >
-            <path
-              stroke-linecap="round"
-              stroke-linejoin="round"
-              d="M12 19V5m-7 7l7-7 7 7"
-            />
+          <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 19V5m-7 7l7-7 7 7"/>
           </svg>
         </button>
       </form>
+
       <p class="text-xs text-slate-500 mt-1.5 text-center">
         Press <kbd class="bg-slate-700 px-1 rounded text-slate-400">Enter</kbd>
-        to send · <kbd class="bg-slate-700 px-1 rounded text-slate-400">Shift+Enter</kbd> for new line
+        to send · <kbd class="bg-slate-700 px-1 rounded text-slate-400">↑↓</kbd> to navigate suggestions
       </p>
     </div>
   </div>
 </template>
 
 <script setup>
-import { nextTick, ref, watch } from "vue";
+import { computed, nextTick, ref, watch } from "vue";
 import MessageBubble from "./MessageBubble.vue";
 import { useChatStore } from "@/stores/chat.js";
 
@@ -164,6 +180,8 @@ const chatStore = useChatStore();
 const inputText = ref("");
 const listRef = ref(null);
 const inputRef = ref(null);
+const suggestions = ref([]);
+const activeSuggestion = ref(-1);
 
 const quickPrompts = [
   "How do I reset my password?",
@@ -172,44 +190,75 @@ const quickPrompts = [
   "Is my data secure?",
 ];
 
-async function send(text) {
-  if (!text.trim() || chatStore.isLoading) return;
-  inputText.value = "";
-  await nextTick();
-  if (inputRef.value) {
-    inputRef.value.style.height = "auto";
-  }
-  await chatStore.sendMessage(text);
+// ── Autocomplete ─────────────────────────────────────────────────────────────
+
+function computeSuggestions(query) {
+  if (!query.trim()) { suggestions.value = []; return; }
+  const q = query.toLowerCase();
+  suggestions.value = chatStore.faqs
+    .filter((f) => f.question.toLowerCase().includes(q))
+    .slice(0, 6); // max 6 suggestions
+  activeSuggestion.value = -1;
 }
 
-// Auto-scroll to the latest message whenever messages change
-watch(
-  () => chatStore.messages.length,
-  async () => {
-    await nextTick();
-    if (listRef.value) {
-      listRef.value.scrollTop = listRef.value.scrollHeight;
-    }
-  }
-);
+function pickSuggestion(question) {
+  inputText.value = question;
+  suggestions.value = [];
+  activeSuggestion.value = -1;
+  nextTick(() => inputRef.value?.focus());
+}
 
-// Also scroll when the loading indicator appears
-watch(
-  () => chatStore.isLoading,
-  async () => {
-    await nextTick();
-    if (listRef.value) {
-      listRef.value.scrollTop = listRef.value.scrollHeight;
-    }
-  }
-);
+function navigateSuggestion(dir) {
+  if (!suggestions.value.length) return;
+  const max = suggestions.value.length - 1;
+  activeSuggestion.value = Math.max(-1, Math.min(max, activeSuggestion.value + dir));
+}
 
-// Auto-resize the textarea as the user types
-function autoResize(e) {
+function highlight(question) {
+  const q = inputText.value.trim();
+  if (!q) return question;
+  const regex = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")})`, "gi");
+  return question.replace(regex, '<mark class="bg-indigo-500/40 text-white rounded px-0.5">$1</mark>');
+}
+
+// ── Input handlers ────────────────────────────────────────────────────────────
+
+function onInput(e) {
   const el = e.target;
   el.style.height = "auto";
   el.style.height = Math.min(el.scrollHeight, 128) + "px";
+  computeSuggestions(inputText.value);
 }
+
+function onEnter() {
+  if (activeSuggestion.value >= 0 && suggestions.value[activeSuggestion.value]) {
+    pickSuggestion(suggestions.value[activeSuggestion.value].question);
+  } else {
+    send(inputText.value);
+  }
+}
+
+// ── Send ──────────────────────────────────────────────────────────────────────
+
+async function send(text) {
+  if (!text.trim() || chatStore.isLoading) return;
+  suggestions.value = [];
+  inputText.value = "";
+  await nextTick();
+  if (inputRef.value) inputRef.value.style.height = "auto";
+  await chatStore.sendMessage(text);
+}
+
+// ── Auto-scroll ───────────────────────────────────────────────────────────────
+
+watch(
+  () => chatStore.messages.length,
+  async () => { await nextTick(); if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight; }
+);
+watch(
+  () => chatStore.isLoading,
+  async () => { await nextTick(); if (listRef.value) listRef.value.scrollTop = listRef.value.scrollHeight; }
+);
 </script>
 
 <style scoped>
@@ -220,5 +269,22 @@ function autoResize(e) {
 .fade-enter-from,
 .fade-leave-to {
   opacity: 0;
+}
+
+.suggestions-enter-active,
+.suggestions-leave-active {
+  transition: max-height 0.15s ease, opacity 0.15s ease;
+  overflow: hidden;
+  max-height: 400px;
+}
+.suggestions-enter-from,
+.suggestions-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+
+/* bg-slate-750 n'existe pas nativement dans Tailwind */
+.bg-slate-750 {
+  background-color: #253047;
 }
 </style>

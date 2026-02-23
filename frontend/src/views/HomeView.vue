@@ -1,12 +1,5 @@
 <template>
   <div class="flex h-screen bg-slate-900 overflow-hidden">
-    <!-- ── Sidebar: FAQ panel ─────────────────────────────── -->
-    <aside
-      class="hidden md:flex flex-col w-72 bg-slate-800 border-r border-slate-700 shrink-0"
-    >
-      <FAQPanel />
-    </aside>
-
     <!-- ── Main: Chat area ───────────────────────────────── -->
     <main class="flex flex-col flex-1 min-w-0">
       <!-- Top bar -->
@@ -69,7 +62,6 @@
 <script setup>
 import { onMounted } from "vue";
 import ChatWindow from "@/components/ChatWindow.vue";
-import FAQPanel from "@/components/FAQPanel.vue";
 import { useChatStore } from "@/stores/chat.js";
 
 const chatStore = useChatStore();

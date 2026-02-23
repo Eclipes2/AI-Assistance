@@ -2,7 +2,7 @@
 
 A full-stack, locally-runnable AI chatbot for customer support — built as a self-learning project.
 
-**Stack:** Vue.js 3 · Django REST Framework · LangChain · Ollama (Mistral 7B) · ChromaDB · MongoDB
+**Stack:** Vue.js 3 · Django REST Framework · LangChain 1.x · Ollama · ChromaDB · MongoDB
 
 ---
 
@@ -11,15 +11,15 @@ A full-stack, locally-runnable AI chatbot for customer support — built as a se
 ```
 ┌─────────────────┐     REST API      ┌──────────────────────┐
 │  Vue.js 3 (Vite)│ ◄────────────── ► │  Django + DRF        │
-│ Pinia · Tailwind│                   │  Python 3.11         │
+│ Pinia · Tailwind│                   │  Python 3.10+        │
 └─────────────────┘                   └──────────┬───────────┘
                                                  │
                            ┌─────────────────────┼──────────────────┐
                            ▼                     ▼                  ▼
                      ┌──────────┐        ┌──────────────┐   ┌──────────────┐
                      │ MongoDB  │        │  ChromaDB    │   │  Ollama      │
-                     │ (history │        │ (vector store│   │  Mistral 7B  │
-                     │  + FAQs) │        │  embeddings) │   │  (local LLM) │
+                     │ (history │        │ (vector store│   │  local LLM   │
+                     │  + FAQs) │        │  embeddings) │   │  (any model) │
                      └──────────┘        └──────────────┘   └──────────────┘
 ```
 
@@ -32,15 +32,18 @@ See [docs/PIPELINE.md](docs/PIPELINE.md) for a deep dive into the RAG pipeline.
 | Tool | Install |
 |------|---------|
 | Docker Desktop | https://www.docker.com/products/docker-desktop/ |
-| Python 3.11+ | https://www.python.org/downloads/ |
+| Python 3.10+ | https://www.python.org/downloads/ |
 | Node.js 20+ | https://nodejs.org/ |
 | Ollama | https://ollama.com/ |
 
-After installing Ollama, pull the model:
+After installing Ollama, pull a model. Mistral is recommended for local use:
 
 ```bash
 ollama pull mistral
 ```
+
+> Any model listed on https://ollama.com/library works. Change `OLLAMA_MODEL`
+> in `backend/chatbot/ai_pipeline.py` to match the model you pulled.
 
 ---
 
@@ -99,10 +102,11 @@ Open http://localhost:5173 in your browser.
 ### 4 — Make sure Ollama is running
 
 ```bash
-# In a separate terminal
+# In a separate terminal (or open the Ollama desktop app)
 ollama serve
-# (or just open the Ollama desktop app)
 ```
+
+> If Ollama is already running you will see `bind: address already in use` — that's fine, it means it's already active.
 
 ---
 
@@ -116,6 +120,15 @@ docker compose up --build
 > via `host.docker.internal:11434`. On Linux you may need to add
 > `--add-host host.docker.internal:host-gateway` to the backend service in
 > `docker-compose.yml`.
+
+---
+
+## UI Features
+
+- **Chat interface** — conversation history with auto-scroll and typing indicator
+- **Markdown rendering** — assistant responses render bold, lists, and code formatting
+- **Autocomplete** — typing in the input bar surfaces matching FAQ questions; navigate with ↑↓ and select with Enter
+- **Collapsible sources** — each AI response shows a "N sources consultées" toggle revealing the FAQ entries used as context
 
 ---
 
@@ -179,7 +192,7 @@ AI-Assistance/
 │   │   ├── views.py          # DRF API views
 │   │   ├── serializers.py    # Input validation + output helpers
 │   │   ├── urls.py           # URL routing
-│   │   ├── ai_pipeline.py    # RAG chain (LangChain + Ollama + ChromaDB)
+│   │   ├── ai_pipeline.py    # RAG chain (LangChain LCEL + Ollama + ChromaDB)
 │   │   └── management/
 │   │       └── commands/
 │   │           ├── seed_faq.py   # Populate MongoDB with sample FAQs
@@ -188,9 +201,8 @@ AI-Assistance/
 ├── frontend/
 │   ├── src/
 │   │   ├── components/
-│   │   │   ├── ChatWindow.vue    # Main chat UI
-│   │   │   ├── MessageBubble.vue # Single message display
-│   │   │   └── FAQPanel.vue      # Sidebar with FAQ catalogue
+│   │   │   ├── ChatWindow.vue    # Chat UI with autocomplete input
+│   │   │   └── MessageBubble.vue # Message display with markdown + source dropdown
 │   │   ├── stores/
 │   │   │   └── chat.js           # Pinia state store
 │   │   └── views/
@@ -206,13 +218,13 @@ AI-Assistance/
 
 ## Learning Notes
 
-| Phase | What you learn |
+| Topic | What you learn |
 |-------|---------------|
 | Backend setup | Django project layout, virtual environments, DRF |
 | MongoEngine | Document-based ODM vs SQL ORM, embedded documents |
-| AI pipeline | RAG architecture, embeddings, vector similarity search |
-| LangChain | Chain abstraction, prompt templates, retrievers |
-| Ollama | Running LLMs locally, model serving |
+| RAG pipeline | Embeddings, vector similarity, threshold-based retrieval |
+| LangChain 1.x | LCEL pipe operator, prompt templates, singletons |
+| Ollama | Running LLMs locally, model serving, model switching |
 | Vue 3 | Composition API, `<script setup>`, reactive refs |
 | Pinia | State stores, actions, getters |
 | Tailwind CSS | Utility-first styling, responsive layout |
