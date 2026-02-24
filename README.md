@@ -99,6 +99,8 @@ npm run dev
 
 Open http://localhost:5173 in your browser.
 
+<img width="1919" height="903" alt="image" src="https://github.com/user-attachments/assets/c5cb32c5-53c0-4e04-b4e8-cbc92c1d2fc3" />
+
 ### 4 — Make sure Ollama is running
 
 ```bash
